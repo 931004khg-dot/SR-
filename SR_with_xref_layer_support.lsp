@@ -103,6 +103,11 @@
     )
   )
 
+  ;; 외부참조 레이어 확인 함수
+  (defun is-xref-layer (layer_name)
+    (if (vl-string-search "|" layer_name) t nil)
+  )
+
   ;; 외부참조 레이어 매칭 함수
   (defun is-layer-match (target_layer current_layer / base_target base_current)
     (setq base_target (extract-base-layer-name target_layer)
@@ -138,6 +143,9 @@
     
     (if sel_set
       (progn
+        ;; 레이어 컬렉션 초기화 (모든 경우에서 필요)
+        (setq layers (vla-get-layers acad_doc))
+        
         ;; 선택된 객체들의 레이어 수집
         (setq target_layer_names '() i 0)
         (repeat (sslength sel_set)
@@ -150,32 +158,52 @@
         ;; 중복 제거
         (setq target_layer_names (remove-duplicates target_layer_names))
         
-        ;; ★★★ 외부참조 레이어 확장 처리 (강화) ★★★
-        ;; 모든 도면층을 검사하여 관련 외부참조 레이어 찾기
-        (setq layers (vla-get-layers acad_doc)
-              all_layer_names '())
-        (vlax-for layer_obj layers
-          (setq all_layer_names (cons (vla-get-name layer_obj) all_layer_names)))
-        
-        ;; 선택된 레이어와 매칭되는 모든 레이어 찾기 (외부참조 포함)
-        (setq xref_layer_names '())
-        (foreach target_layer target_layer_names
-          (foreach all_layer all_layer_names
-            (if (is-layer-match target_layer all_layer)
-              (if (not (member all_layer xref_layer_names))
-                (setq xref_layer_names (cons all_layer xref_layer_names))
-              )
-            )
+        ;; ★★★ 선택적 외부참조 레이어 확장 처리 (개선) ★★★
+        ;; 선택된 객체 중에 외부참조 레이어가 있는지 확인
+        (setq has_xref_selection nil)
+        (foreach layer_name target_layer_names
+          (if (is-xref-layer layer_name)
+            (setq has_xref_selection t)
           )
         )
         
-        ;; 최종 표시할 레이어 목록 (원래 + 외부참조 매칭)
-        (setq target_layer_names (remove-duplicates (append target_layer_names xref_layer_names)))
+        ;; 외부참조 객체를 선택한 경우에만 관련 XREF 레이어 확장
+        (if has_xref_selection
+          (progn
+            (prompt "\n>> 외부참조 객체가 선택되어 관련 XREF 레이어를 확장합니다...")
+            ;; 모든 도면층을 검사하여 관련 외부참조 레이어 찾기
+            (setq all_layer_names '())
+            (vlax-for layer_obj layers
+              (setq all_layer_names (cons (vla-get-name layer_obj) all_layer_names)))
+            
+            ;; 선택된 레이어와 매칭되는 모든 레이어 찾기 (외부참조 포함)
+            (setq xref_layer_names '())
+            (foreach target_layer target_layer_names
+              (foreach all_layer all_layer_names
+                (if (is-layer-match target_layer all_layer)
+                  (if (not (member all_layer xref_layer_names))
+                    (setq xref_layer_names (cons all_layer xref_layer_names))
+                  )
+                )
+              )
+            )
+            
+            ;; 최종 표시할 레이어 목록 (원래 + 외부참조 매칭)
+            (setq target_layer_names (remove-duplicates (append target_layer_names xref_layer_names)))
+          )
+          (progn
+            (prompt "\n>> 일반 레이어만 선택되어 XREF 확장을 건너뜁니다...")
+            ;; 외부참조 선택이 없으면 원래 레이어만 사용
+          )
+        )
         
         ;; 레이어 목록을 문자열로 변환
         (setq layer_list_str (layers-to-string target_layer_names))
         (prompt (strcat "\n선택된 객체들의 레이어: " layer_list_str))
-        (prompt (strcat "\n외부참조 포함 총 " (itoa (length target_layer_names)) "개 레이어가 표시됩니다."))
+        (if has_xref_selection
+          (prompt (strcat "\n외부참조 확장 포함 총 " (itoa (length target_layer_names)) "개 레이어가 표시됩니다."))
+          (prompt (strcat "\n총 " (itoa (length target_layer_names)) "개 레이어가 표시됩니다."))
+        )
 
         ;; 레이어 분리 실행
         (setq g_original_vp_layer_states nil
