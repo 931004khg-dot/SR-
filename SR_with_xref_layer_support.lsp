@@ -34,7 +34,7 @@
     (if g_sr_selection_set
       (progn
         (setq g_sr_selection_set nil) ; 선택집합 해제
-        (vl-catch-all-apply '(lambda () (command "_.REDRAW"))) ; 화면 갱신으로 선택 강조 제거
+        (vl-catch-all-apply '(lambda () (command-s "_.REDRAW"))) ; 화면 갱신으로 선택 강조 제거
       )
     )
     ;; 임시 측정 객체들 삭제
@@ -249,11 +249,11 @@
              
              ;; 2. XREF 재로드 시도 (중요!)
              (prompt "\n>> XREF 객체 새로고침을 위해 REGEN을 실행합니다...")
-             (vl-catch-all-apply '(lambda () (command "_.REGEN")))
+             (vl-catch-all-apply '(lambda () (command-s "_.REGEN")))
              
              ;; 3. XCLIP 확인 및 해제 시도
              (prompt "\n>> XREF 클리핑 상태를 확인합니다...")
-             (vl-catch-all-apply '(lambda () (command "_.-XCLIP" "_ALL" "_Delete" "")))
+             (vl-catch-all-apply '(lambda () (command-s "_.XCLIP" "_ALL" "_Delete" "")))
           )
         )
 
@@ -269,6 +269,9 @@
               (setq i (1+ i)))))
         
         ;; ★★★ 레이어 끄기/켜기 처리 (외부참조 고려 + 동결 해제) - 오류 방지 ★★★
+        (prompt (strcat "\n[DEBUG] 레이어 제어 시작 - 선택된 레이어: " (vl-princ-to-string target_layer_names)))
+        (prompt (strcat "\n[DEBUG] 페이퍼스페이스 레이어: " (vl-princ-to-string paperspace_layers)))
+        
         (vlax-for layer_obj layers
           (vl-catch-all-apply
             '(lambda ()
@@ -276,21 +279,28 @@
                (cond
                  ;; 선택된 객체들의 레이어는 켜기 (외부참조 포함)
                  ((member layer_name target_layer_names)
+                  (prompt (strcat "\n[DEBUG] 켜는 레이어: " layer_name))
                   (vla-put-layeron layer_obj :vlax-true)
                   ;; 외부참조가 아닌 일반 레이어만 freeze/lock 제어
                   (if (not (vl-string-search "|" layer_name))
                     (progn
                       (vla-put-freeze layer_obj :vlax-false)
                       (vla-put-lock layer_obj :vlax-false)
+                      (prompt (strcat "\n[DEBUG] " layer_name " 동결해제/잠금해제 완료"))
                     )
                   )
                  )
                  ;; 페이퍼스페이스 레이어는 그대로 유지
                  ((member layer_name paperspace_layers)
+                  (prompt (strcat "\n[DEBUG] 페이퍼스페이스 레이어 유지: " layer_name))
                   nil) ; 상태 유지
                  ;; 나머지 레이어는 끄기 (외부참조 레이어가 아닌 경우만)
                  ((not (vl-string-search "|" layer_name))
+                  (prompt (strcat "\n[DEBUG] 끄는 레이어: " layer_name))
                   (vla-put-layeron layer_obj :vlax-false))
+                 ;; 외부참조 레이어는 건너뜀
+                 (t
+                  (prompt (strcat "\n[DEBUG] XREF 레이어 건너뜀: " layer_name)))
                )
             )
           )
@@ -304,7 +314,7 @@
         (vl-catch-all-apply
           '(lambda ()
              (prompt "\n>> 최종 화면 새로고침을 수행합니다...")
-             (command "_.REGEN")
+             (command-s "_.REGEN")
              ;; XREF 레이어의 객체들을 강제로 다시 표시하기 위한 추가 처리
              (foreach xref_layer target_layer_names
                (if (vl-string-search "|" xref_layer)
@@ -366,7 +376,7 @@
         )
         
         ;; 화면 새로고침
-        (vl-catch-all-apply '(lambda () (command "_.REGEN")))
+        (vl-catch-all-apply '(lambda () (command-s "_.REGEN")))
         
         (setq g_original_vp_layer_states nil
               g_original_xref_layer_states nil
@@ -508,7 +518,7 @@
            (prompt (strcat "\n[DEBUG] 높이 값: " (rtos g_viewport_height 2 4)))
            
            ;; ZOOM Center 명령 실행 (정확한 방식)
-           (vl-catch-all-apply '(lambda () (command "_.zoom" "_c" view_center_3d g_viewport_height)))
+           (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" view_center_3d g_viewport_height)))
            
            (prompt "\n>> 이전 화면으로 복원 완료 (ZOOM Center 방식)")
          )
@@ -555,7 +565,7 @@
            (prompt (strcat "\n[DEBUG] 높이 값: " (rtos g_paper_viewport_height 2 4)))
            
            ;; ZOOM Center 명령 실행
-           (vl-catch-all-apply '(lambda () (command "_.zoom" "_c" view_center_3d g_paper_viewport_height)))
+           (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" view_center_3d g_paper_viewport_height)))
            
            (prompt "\n>> 이전 배치 공간 화면으로 복원 완료 (ZOOM Center 방식)")
          )
@@ -602,7 +612,7 @@
            (prompt (strcat "\n[DEBUG] 뷰포트 높이 값: " (rtos g_paper_viewport_height 2 4)))
            
            ;; ZOOM Center 명령 실행 - 뷰포트 높이 사용
-           (vl-catch-all-apply '(lambda () (command "_.zoom" "_c" view_center_3d g_paper_viewport_height)))
+           (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" view_center_3d g_paper_viewport_height)))
            
            (prompt "\n>> 뷰포트용 배치 공간 화면으로 복원 완료 (ZOOM Center 방식)")
          )
@@ -624,7 +634,7 @@
                vp_top (+ (cadr vp_center_ps) (/ vp_height_ps 2.0)))
          
          ;; ZOOM Window 실행
-         (vl-catch-all-apply '(lambda () (command "_.zoom" "_window" (list vp_left vp_bottom) (list vp_right vp_top))))
+         (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_window" (list vp_left vp_bottom) (list vp_right vp_top))))
          
          ;; 뷰포트 너비 정보만 저장 (높이는 동적으로 저장되므로)
          (setq g_paper_viewport_width vp_width_ps)
@@ -753,7 +763,7 @@
          (if (>= (length points) 2)
            (setq current_temp_pline (create-temp-polyline points nil))
          )
-         (vl-catch-all-apply '(lambda () (command "_.REDRAW")))
+         (vl-catch-all-apply '(lambda () (command-s "_.REDRAW")))
         )
         
         ;; Enter 또는 취소
@@ -783,7 +793,7 @@
            (setq temp_ename (vlax-vla-object->ename temp_pline))
            
            ;; 화면 갱신
-           (vl-catch-all-apply '(lambda () (command "_.REDRAW")))
+           (vl-catch-all-apply '(lambda () (command-s "_.REDRAW")))
            
            ;; 길이/넓이 계산
            (if is_closed
@@ -891,7 +901,7 @@
       (progn
         (setq g_sr_selection_set nil) ; 선택집합 해제
         (sssetfirst nil nil) ; AutoCAD의 현재 선택집합 해제
-        (vl-catch-all-apply '(lambda () (command "_.REDRAW"))) ; 화면 갱신
+        (vl-catch-all-apply '(lambda () (command-s "_.REDRAW"))) ; 화면 갱신
       )
     )
   )
@@ -1723,7 +1733,7 @@
                 (progn
                   (prompt "\n>> 이전 텍스트 위치로 화면을 복원합니다...")
                   (setq text_center_3d (list (car g_saved_text_center) (cadr g_saved_text_center) 0.0))
-                  (vl-catch-all-apply '(lambda () (command "_.zoom" "_c" text_center_3d g_viewport_height)))
+                  (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" text_center_3d g_viewport_height)))
                 )
               )
               ;; 배치공간
@@ -1731,7 +1741,7 @@
                 (progn
                   (prompt "\n>> 이전 텍스트 위치로 화면을 복원합니다...")
                   (setq text_center_3d (list (car g_saved_paper_text_center) (cadr g_saved_paper_text_center) 0.0))
-                  (vl-catch-all-apply '(lambda () (command "_.zoom" "_c" text_center_3d g_paper_viewport_height)))
+                  (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" text_center_3d g_paper_viewport_height)))
                 )
               )
             )
@@ -2005,7 +2015,7 @@
                 (progn
                   (prompt "\n>> 이전 텍스트 위치로 화면을 복원합니다...")
                   (setq text_center_3d (list (car g_saved_paper_text_center) (cadr g_saved_paper_text_center) 0.0))
-                  (vl-catch-all-apply '(lambda () (command "_.zoom" "_c" text_center_3d g_paper_viewport_height)))
+                  (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" text_center_3d g_paper_viewport_height)))
                 )
               )
               
