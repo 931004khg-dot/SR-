@@ -148,6 +148,7 @@
         
         ;; 선택된 객체들의 레이어 수집 + 외부참조 블록 감지
         (setq target_layer_names '() selected_xref_blocks '() i 0)
+        (prompt (strcat "\n=== 레이어 분리 시작 (" (itoa (sslength sel_set)) "개 객체 선택) ==="))
         (repeat (sslength sel_set)
           (setq obj_vla (vlax-ename->vla-object (ssname sel_set i))
                 layer_name (vla-get-layer obj_vla))
@@ -156,32 +157,51 @@
           (if (not (member layer_name target_layer_names))
             (setq target_layer_names (cons layer_name target_layer_names)))
           
-          ;; ★★★ 외부참조 블록 감지 ★★★
-          (if (= (vla-get-objectname obj_vla) "AcDbBlockReference")
-            (vl-catch-all-apply
-              '(lambda ()
-                 (setq block_name (vla-get-name obj_vla))
-                 ;; 블록이 외부참조인지 확인
-                 (setq blocks_collection (vla-get-blocks acad_doc))
-                 (if (not (vl-catch-all-error-p (vl-catch-all-apply 'vla-item (list blocks_collection block_name))))
-                   (progn
-                     (setq block_def (vla-item blocks_collection block_name))
-                     (if (= (vla-get-isxref block_def) :vlax-true)
-                       (progn
-                         (prompt (strcat "\n>> 외부참조 블록 감지: " block_name))
-                         (if (not (member block_name selected_xref_blocks))
-                           (setq selected_xref_blocks (cons block_name selected_xref_blocks)))
+          ;; ★★★ 외부참조 블록 감지 (강화된 디버깅) ★★★
+          (setq object_type (vla-get-objectname obj_vla))
+          (if (= object_type "AcDbBlockReference")
+            (progn
+              (setq block_name (vla-get-name obj_vla))
+              (prompt (strcat "\n[XREF-DEBUG] 블록 참조 발견: '" block_name "' (레이어: " layer_name ")"))
+              
+              (vl-catch-all-apply
+                '(lambda ()
+                   ;; 블록이 외부참조인지 확인
+                   (setq blocks_collection (vla-get-blocks acad_doc))
+                   (if (not (vl-catch-all-error-p (vl-catch-all-apply 'vla-item (list blocks_collection block_name))))
+                     (progn
+                       (setq block_def (vla-item blocks_collection block_name))
+                       (setq is_xref (vla-get-isxref block_def))
+                       (prompt (strcat "\n[XREF-DEBUG] 블록 '" block_name "' IsXref: " (vl-princ-to-string is_xref)))
+                       
+                       (if (= is_xref :vlax-true)
+                         (progn
+                           (prompt (strcat "\n>> ✓ 외부참조 블록 감지: '" block_name "'"))
+                           (if (not (member block_name selected_xref_blocks))
+                             (setq selected_xref_blocks (cons block_name selected_xref_blocks)))
+                         )
+                         (prompt (strcat "\n[XREF-DEBUG] '" block_name "'는 외부참조가 아님"))
                        )
                      )
+                     (prompt (strcat "\n[XREF-DEBUG] 블록 정의를 찾을 수 없음: '" block_name "'"))
                    )
                  )
-               )
+              )
             )
+            ;; 블록이 아닌 경우도 로깅
+            (prompt (strcat "\n[XREF-DEBUG] 객체 타입: " object_type " (레이어: " layer_name ")"))
           )
           (setq i (1+ i)))
         
         ;; 중복 제거
         (setq target_layer_names (remove-duplicates target_layer_names))
+        
+        ;; 감지 결과 요약
+        (prompt (strcat "\n>> 감지된 레이어: " (vl-princ-to-string target_layer_names)))
+        (if selected_xref_blocks
+          (prompt (strcat "\n>> 감지된 XREF 블록: " (vl-princ-to-string selected_xref_blocks)))
+          (prompt "\n>> XREF 블록 감지되지 않음")
+        )
         
         ;; ★★★ 선택적 외부참조 레이어 확장 처리 (개선) ★★★
         ;; 선택된 객체 중에 외부참조 레이어가 있는지 확인
@@ -193,10 +213,10 @@
         )
         
         ;; 외부참조 블록이 선택되었는지도 확인
-        (if (and (not has_xref_selection) selected_xref_blocks)
+        (if selected_xref_blocks
           (progn
             (setq has_xref_selection t)
-            (prompt (strcat "\n>> 외부참조 블록이 선택되어 XREF 레이어 확장을 활성화합니다: " (vl-princ-to-string selected_xref_blocks)))
+            (prompt (strcat "\n>> ✓ 외부참조 블록이 선택되어 XREF 레이어 확장을 활성화합니다: " (vl-princ-to-string selected_xref_blocks)))
           )
         )
         
@@ -305,9 +325,21 @@
              (prompt "\n>> XREF 객체 새로고침을 위해 REGEN을 실행합니다...")
              (vl-catch-all-apply '(lambda () (command-s "_.REGEN")))
              
-             ;; 3. XCLIP 확인 및 해제 시도
-             (prompt "\n>> XREF 클리핑 상태를 확인합니다...")
-             (vl-catch-all-apply '(lambda () (command-s "_.XCLIP" "_ALL" "_Delete" "")))
+             ;; 3. XCLIP 확인 및 해제 시도 (선택적)
+             (if has_xref_selection
+               (progn
+                 (prompt "\n>> XREF 클리핑 상태를 확인합니다...")
+                 (vl-catch-all-apply '(lambda () 
+                   ;; XCLIP 명령어를 단계별로 실행 (올바른 순서)
+                   (command "_.XCLIP") ; XCLIP 명령 시작
+                   (command "_ALL") ; 모든 객체 선택
+                   (command "") ; 선택 완료
+                   (command "_Delete") ; 클리핑 삭제 옵션
+                   (command "") ; 명령 완료
+                 ))
+               )
+               (prompt "\n>> XREF 객체가 없어 XCLIP 처리를 건너뛁니다...")
+             )
           )
         )
 
@@ -323,8 +355,7 @@
               (setq i (1+ i)))))
         
         ;; ★★★ 레이어 끄기/켜기 처리 (외부참조 고려 + 동결 해제) - 오류 방지 ★★★
-        (prompt (strcat "\n[DEBUG] 레이어 제어 시작 - 선택된 레이어: " (vl-princ-to-string target_layer_names)))
-        (prompt (strcat "\n[DEBUG] 페이퍼스페이스 레이어: " (vl-princ-to-string paperspace_layers)))
+        (prompt (strcat "\n>> 레이어 제어 시작 - 선택된 레이어 수: " (itoa (length target_layer_names))))
         
         (vlax-for layer_obj layers
           (vl-catch-all-apply
@@ -333,28 +364,23 @@
                (cond
                  ;; 선택된 객체들의 레이어는 켜기 (외부참조 포함)
                  ((member layer_name target_layer_names)
-                  (prompt (strcat "\n[DEBUG] 켜는 레이어: " layer_name))
                   (vla-put-layeron layer_obj :vlax-true)
                   ;; 외부참조가 아닌 일반 레이어만 freeze/lock 제어
                   (if (not (vl-string-search "|" layer_name))
                     (progn
                       (vla-put-freeze layer_obj :vlax-false)
                       (vla-put-lock layer_obj :vlax-false)
-                      (prompt (strcat "\n[DEBUG] " layer_name " 동결해제/잠금해제 완료"))
                     )
                   )
                  )
                  ;; 페이퍼스페이스 레이어는 그대로 유지
                  ((member layer_name paperspace_layers)
-                  (prompt (strcat "\n[DEBUG] 페이퍼스페이스 레이어 유지: " layer_name))
                   nil) ; 상태 유지
                  ;; 나머지 레이어는 끄기 (외부참조 레이어가 아닌 경우만)
                  ((not (vl-string-search "|" layer_name))
-                  (prompt (strcat "\n[DEBUG] 끄는 레이어: " layer_name))
                   (vla-put-layeron layer_obj :vlax-false))
                  ;; 외부참조 레이어는 건너뜀
-                 (t
-                  (prompt (strcat "\n[DEBUG] XREF 레이어 건너뜀: " layer_name)))
+                 (t nil)
                )
             )
           )
@@ -394,18 +420,24 @@
         (prompt "\n>> 레이어 상태를 복원하는 중...")
         (setq layers (vla-get-layers acad_doc))
         
-        ;; 기본 레이어 상태 복원 (On/Off, Freeze/Thaw, Lock/Unlock)
+        ;; 기본 레이어 상태 복원 (On/Off, Freeze/Thaw, Lock/Unlock) - 오류 방지 강화
         (foreach state g_original_vp_layer_states
-          (if (not (vl-catch-all-error-p 
-                     (vl-catch-all-apply 'vla-item (list layers (car state)))))
-            (vl-catch-all-apply
-              '(lambda ()
-                (setq layer_obj (vla-item layers (car state)))
-                (vla-put-layeron layer_obj (cadr state))     ; On/Off 상태
-                (vla-put-freeze layer_obj (caddr state))     ; Freeze/Thaw 상태
-                (vla-put-lock layer_obj (cadddr state))      ; Lock/Unlock 상태
-              )
-            )
+          (vl-catch-all-apply
+            '(lambda ()
+               (setq layer_name (car state))
+               ;; 레이어가 존재하는지 확인
+               (if (not (vl-catch-all-error-p 
+                         (vl-catch-all-apply 'vla-item (list layers layer_name))))
+                 (progn
+                   (setq layer_obj (vla-item layers layer_name))
+                   ;; 각 속성을 개별적으로 안전하게 복원
+                   (vl-catch-all-apply '(lambda () (vla-put-layeron layer_obj (cadr state))))
+                   (vl-catch-all-apply '(lambda () (vla-put-freeze layer_obj (caddr state))))
+                   (vl-catch-all-apply '(lambda () (vla-put-lock layer_obj (cadddr state))))
+                 )
+                 (prompt (strcat "\n[경고] 레이어 '" layer_name "'을 찾을 수 없어 복원을 건너뛁니다."))
+               )
+             )
           )
         )
         
