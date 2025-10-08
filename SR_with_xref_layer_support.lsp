@@ -146,13 +146,38 @@
         ;; 레이어 컬렉션 초기화 (모든 경우에서 필요)
         (setq layers (vla-get-layers acad_doc))
         
-        ;; 선택된 객체들의 레이어 수집
-        (setq target_layer_names '() i 0)
+        ;; 선택된 객체들의 레이어 수집 + 외부참조 블록 감지
+        (setq target_layer_names '() selected_xref_blocks '() i 0)
         (repeat (sslength sel_set)
           (setq obj_vla (vlax-ename->vla-object (ssname sel_set i))
                 layer_name (vla-get-layer obj_vla))
+          
+          ;; 레이어명 수집
           (if (not (member layer_name target_layer_names))
             (setq target_layer_names (cons layer_name target_layer_names)))
+          
+          ;; ★★★ 외부참조 블록 감지 ★★★
+          (if (= (vla-get-objectname obj_vla) "AcDbBlockReference")
+            (vl-catch-all-apply
+              '(lambda ()
+                 (setq block_name (vla-get-name obj_vla))
+                 ;; 블록이 외부참조인지 확인
+                 (setq blocks_collection (vla-get-blocks acad_doc))
+                 (if (not (vl-catch-all-error-p (vl-catch-all-apply 'vla-item (list blocks_collection block_name))))
+                   (progn
+                     (setq block_def (vla-item blocks_collection block_name))
+                     (if (= (vla-get-isxref block_def) :vlax-true)
+                       (progn
+                         (prompt (strcat "\n>> 외부참조 블록 감지: " block_name))
+                         (if (not (member block_name selected_xref_blocks))
+                           (setq selected_xref_blocks (cons block_name selected_xref_blocks)))
+                       )
+                     )
+                   )
+                 )
+               )
+            )
+          )
           (setq i (1+ i)))
         
         ;; 중복 제거
@@ -167,6 +192,14 @@
           )
         )
         
+        ;; 외부참조 블록이 선택되었는지도 확인
+        (if (and (not has_xref_selection) selected_xref_blocks)
+          (progn
+            (setq has_xref_selection t)
+            (prompt (strcat "\n>> 외부참조 블록이 선택되어 XREF 레이어 확장을 활성화합니다: " (vl-princ-to-string selected_xref_blocks)))
+          )
+        )
+        
         ;; 외부참조 객체를 선택한 경우에만 관련 XREF 레이어 확장
         (if has_xref_selection
           (progn
@@ -178,11 +211,32 @@
             
             ;; 선택된 레이어와 매칭되는 모든 레이어 찾기 (외부참조 포함)
             (setq xref_layer_names '())
+            
+            ;; 1. 기존 레이어 매칭 로직
             (foreach target_layer target_layer_names
               (foreach all_layer all_layer_names
                 (if (is-layer-match target_layer all_layer)
                   (if (not (member all_layer xref_layer_names))
                     (setq xref_layer_names (cons all_layer xref_layer_names))
+                  )
+                )
+              )
+            )
+            
+            ;; 2. ★★★ 선택된 외부참조 블록의 모든 레이어 추가 ★★★
+            (if selected_xref_blocks
+              (foreach xref_block_name selected_xref_blocks
+                (prompt (strcat "\n>> 외부참조 블록 '" xref_block_name "' 의 레이어들을 찾는 중..."))
+                (foreach all_layer all_layer_names
+                  ;; 외부참조 블록명으로 시작하는 레이어들 찾기
+                  (if (and (vl-string-search "|" all_layer)
+                           (= (vl-string-search (strcat xref_block_name "|") all_layer) 0))
+                    (if (not (member all_layer xref_layer_names))
+                      (progn
+                        (setq xref_layer_names (cons all_layer xref_layer_names))
+                        (prompt (strcat "\n>> 추가된 XREF 레이어: " all_layer))
+                      )
+                    )
                   )
                 )
               )
