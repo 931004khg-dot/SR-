@@ -1,5 +1,5 @@
-;; SR.lsp - 레이어 분리 기능이 추가된 객체 측정 리습 (외부참조 지원)
-;; 수정 사항: 뷰포트 내부 측정 모드에서 레이어 분리 기능 추가 + 외부참조 레이어 지원
+;; SR.lsp - 레이어 분리 기능이 추가된 객체 측정 리습
+;; 수정 사항: 뷰포트 내부 측정 모드에서 레이어 분리 기능 추가
 
 (defun C:SR (/ acad_doc old_error g_sr_selection_set 
                g_saved_view_center g_saved_paper_view_center
@@ -25,7 +25,6 @@
   (setq g_temp_measurement_object_list nil)
   ;; --- 레이어 분리 관련 전역 변수 ---
   (setq g_original_vp_layer_states nil)
-  (setq g_original_xref_layer_states nil) ; 외부참조 레이어 상태 저장
   (setq g_layer_separation_active nil)
 
   ;; --- ESC 또는 오류 발생 시 실행될 안전 장치(오류 핸들러) ---
@@ -34,7 +33,7 @@
     (if g_sr_selection_set
       (progn
         (setq g_sr_selection_set nil) ; 선택집합 해제
-        (vl-catch-all-apply '(lambda () (command-s "_.REDRAW"))) ; 화면 갱신으로 선택 강조 제거
+        (command "_.REDRAW") ; 화면 갱신으로 선택 강조 제거
       )
     )
     ;; 임시 측정 객체들 삭제
@@ -103,11 +102,6 @@
     )
   )
 
-  ;; 외부참조 레이어 확인 함수
-  (defun is-xref-layer (layer_name)
-    (if (vl-string-search "|" layer_name) t nil)
-  )
-
   ;; 외부참조 레이어 매칭 함수
   (defun is-layer-match (target_layer current_layer / base_target base_current)
     (setq base_target (extract-base-layer-name target_layer)
@@ -121,237 +115,63 @@
     )
   )
 
-  ;; 레이어 분리 함수 (외부참조 지원 강화)
+  ;; 레이어 분리 함수 (외부참조 지원)
   (defun perform-layer-separation (/ sel_set target_layer_names layers layer_obj layer_name
                                       paperspace_layers ss i ent layer_list_str obj_vla
-                                      xref_layer_names all_layer_names xrefs_collection xref_obj
-                                      xref_blocks xref_block_obj safe_layer_name)
-    (prompt "\n=== 레이어 분리 모드 (XREF 완전 지원) ===")
+                                      xref_layer_names all_layer_names)
+    (prompt "\n=== 레이어 분리 모드 ===")
     (prompt "\n표시할 레이어의 객체들을 선택하세요 (Enter로 완료): ")
-    
-    ;; ★★★ XREF 가시성을 위한 시스템 변수 확인 및 설정 ★★★
-    (vl-catch-all-apply
-      '(lambda ()
-         ;; XREF 표시 관련 시스템 변수들 확인
-         (if (< (getvar "VISRETAIN") 1) (setvar "VISRETAIN" 1))
-         (if (< (getvar "XREFOVERRIDE") 1) (setvar "XREFOVERRIDE" 1))
-         (prompt "\n>> XREF 가시성 설정 최적화 완료")
-      )
-    )
-    
     (setq sel_set (ssget))
     
     (if sel_set
       (progn
-        ;; 레이어 컬렉션 초기화 (모든 경우에서 필요)
-        (setq layers (vla-get-layers acad_doc))
-        
-        ;; 선택된 객체들의 레이어 수집 + 외부참조 블록 감지
-        (setq target_layer_names '() selected_xref_blocks '() i 0)
-        (prompt (strcat "\n=== 레이어 분리 시작 (" (itoa (sslength sel_set)) "개 객체 선택) ==="))
+        ;; 선택된 객체들의 레이어 수집
+        (setq target_layer_names '() i 0)
         (repeat (sslength sel_set)
           (setq obj_vla (vlax-ename->vla-object (ssname sel_set i))
                 layer_name (vla-get-layer obj_vla))
-          
-          ;; 레이어명 수집
           (if (not (member layer_name target_layer_names))
             (setq target_layer_names (cons layer_name target_layer_names)))
-          
-          ;; ★★★ 외부참조 블록 감지 (강화된 디버깅) ★★★
-          (setq object_type (vla-get-objectname obj_vla))
-          (if (= object_type "AcDbBlockReference")
-            (progn
-              (setq block_name (vla-get-name obj_vla))
-              (prompt (strcat "\n[XREF-DEBUG] 블록 참조 발견: '" block_name "' (레이어: " layer_name ")"))
-              
-              (vl-catch-all-apply
-                '(lambda ()
-                   ;; 블록이 외부참조인지 확인
-                   (setq blocks_collection (vla-get-blocks acad_doc))
-                   (if (not (vl-catch-all-error-p (vl-catch-all-apply 'vla-item (list blocks_collection block_name))))
-                     (progn
-                       (setq block_def (vla-item blocks_collection block_name))
-                       (setq is_xref (vla-get-isxref block_def))
-                       (prompt (strcat "\n[XREF-DEBUG] 블록 '" block_name "' IsXref: " (vl-princ-to-string is_xref)))
-                       
-                       (if (= is_xref :vlax-true)
-                         (progn
-                           (prompt (strcat "\n>> ✓ 외부참조 블록 감지: '" block_name "'"))
-                           (if (not (member block_name selected_xref_blocks))
-                             (setq selected_xref_blocks (cons block_name selected_xref_blocks)))
-                         )
-                         (prompt (strcat "\n[XREF-DEBUG] '" block_name "'는 외부참조가 아님"))
-                       )
-                     )
-                     (prompt (strcat "\n[XREF-DEBUG] 블록 정의를 찾을 수 없음: '" block_name "'"))
-                   )
-                 )
-              )
-            )
-            ;; 블록이 아닌 경우도 로깅
-            (prompt (strcat "\n[XREF-DEBUG] 객체 타입: " object_type " (레이어: " layer_name ")"))
-          )
           (setq i (1+ i)))
         
         ;; 중복 제거
         (setq target_layer_names (remove-duplicates target_layer_names))
         
-        ;; 감지 결과 요약
-        (prompt (strcat "\n>> 감지된 레이어: " (vl-princ-to-string target_layer_names)))
-        (if selected_xref_blocks
-          (prompt (strcat "\n>> 감지된 XREF 블록: " (vl-princ-to-string selected_xref_blocks)))
-          (prompt "\n>> XREF 블록 감지되지 않음")
-        )
+        ;; ★★★ 외부참조 레이어 확장 처리 ★★★
+        ;; 모든 도면층을 검사하여 관련 외부참조 레이어 찾기
+        (setq layers (vla-get-layers acad_doc)
+              all_layer_names '())
+        (vlax-for layer_obj layers
+          (setq all_layer_names (cons (vla-get-name layer_obj) all_layer_names)))
         
-        ;; ★★★ 선택적 외부참조 레이어 확장 처리 (개선) ★★★
-        ;; 선택된 객체 중에 외부참조 레이어가 있는지 확인
-        (setq has_xref_selection nil)
-        (prompt "\n[DEBUG] XREF 선택 여부 확인 중...")
-        (foreach layer_name target_layer_names
-          (prompt (strcat "\n[DEBUG] 레이어 체크: '" layer_name "'"))
-          (if (is-xref-layer layer_name)
-            (progn
-              (setq has_xref_selection t)
-              (prompt (strcat "\n[DEBUG] ★ XREF 레이어 발견: '" layer_name "'"))
-            )
-            (prompt (strcat "\n[DEBUG] - 일반 레이어: '" layer_name "'"))
-          )
-        )
-        
-        ;; 외부참조 블록이 선택되었는지도 확인
-        (prompt (strcat "\n[DEBUG] XREF 블록 검사: " (vl-princ-to-string selected_xref_blocks)))
-        (if selected_xref_blocks
-          (progn
-            (setq has_xref_selection t)
-            (prompt (strcat "\n>> ✓ 외부참조 블록이 선택되어 XREF 레이어 확장을 활성화합니다: " (vl-princ-to-string selected_xref_blocks)))
-          )
-          (prompt "\n[DEBUG] - XREF 블록이 선택되지 않음")
-        )
-        
-        (prompt (strcat "\n[DEBUG] 최종 has_xref_selection: " (vl-princ-to-string has_xref_selection)))
-        
-        ;; 외부참조 객체를 선택한 경우에만 관련 XREF 레이어 확장
-        (if has_xref_selection
-          (progn
-            (prompt "\n>> 외부참조 객체가 선택되어 관련 XREF 레이어를 확장합니다...")
-            ;; 모든 도면층을 검사하여 관련 외부참조 레이어 찾기
-            (setq all_layer_names '())
-            (vlax-for layer_obj layers
-              (setq all_layer_names (cons (vla-get-name layer_obj) all_layer_names)))
-            
-            ;; 선택된 레이어와 매칭되는 모든 레이어 찾기 (외부참조 포함)
-            (setq xref_layer_names '())
-            
-            ;; 1. 기존 레이어 매칭 로직
-            (foreach target_layer target_layer_names
-              (foreach all_layer all_layer_names
-                (if (is-layer-match target_layer all_layer)
-                  (if (not (member all_layer xref_layer_names))
-                    (setq xref_layer_names (cons all_layer xref_layer_names))
-                  )
-                )
+        ;; 선택된 레이어와 매칭되는 모든 레이어 찾기 (외부참조 포함)
+        (setq xref_layer_names '())
+        (foreach target_layer target_layer_names
+          (foreach all_layer all_layer_names
+            (if (is-layer-match target_layer all_layer)
+              (if (not (member all_layer xref_layer_names))
+                (setq xref_layer_names (cons all_layer xref_layer_names))
               )
             )
-            
-            ;; 2. ★★★ 선택된 외부참조 블록의 모든 레이어 추가 ★★★
-            (if selected_xref_blocks
-              (foreach xref_block_name selected_xref_blocks
-                (prompt (strcat "\n>> 외부참조 블록 '" xref_block_name "' 의 레이어들을 찾는 중..."))
-                (foreach all_layer all_layer_names
-                  ;; 외부참조 블록명으로 시작하는 레이어들 찾기
-                  (if (and (vl-string-search "|" all_layer)
-                           (= (vl-string-search (strcat xref_block_name "|") all_layer) 0))
-                    (if (not (member all_layer xref_layer_names))
-                      (progn
-                        (setq xref_layer_names (cons all_layer xref_layer_names))
-                        (prompt (strcat "\n>> 추가된 XREF 레이어: " all_layer))
-                      )
-                    )
-                  )
-                )
-              )
-            )
-            
-            ;; 최종 표시할 레이어 목록 (원래 + 외부참조 매칭)
-            (setq target_layer_names (remove-duplicates (append target_layer_names xref_layer_names)))
-          )
-          (progn
-            (prompt "\n>> 일반 레이어만 선택되어 XREF 확장을 건너뜁니다...")
-            ;; 외부참조 선택이 없으면 원래 레이어만 사용
           )
         )
+        
+        ;; 최종 표시할 레이어 목록 (원래 + 외부참조 매칭)
+        (setq target_layer_names (remove-duplicates (append target_layer_names xref_layer_names)))
         
         ;; 레이어 목록을 문자열로 변환
         (setq layer_list_str (layers-to-string target_layer_names))
         (prompt (strcat "\n선택된 객체들의 레이어: " layer_list_str))
-        (if has_xref_selection
-          (prompt (strcat "\n외부참조 확장 포함 총 " (itoa (length target_layer_names)) "개 레이어가 표시됩니다."))
-          (prompt (strcat "\n총 " (itoa (length target_layer_names)) "개 레이어가 표시됩니다."))
-        )
+        (prompt (strcat "\n외부참조 포함 총 " (itoa (length target_layer_names)) "개 레이어가 표시됩니다."))
 
         ;; 레이어 분리 실행
-        (setq g_original_vp_layer_states nil
-              g_original_xref_layer_states nil)
+        (setq g_original_vp_layer_states nil)
 
-        ;; ★★★ 현재 레이어 상태 저장 (On/Off, Freeze/Thaw, Lock/Unlock) - 오류 방지 ★★★
+        ;; 현재 레이어 상태 저장
         (vlax-for layer_obj layers
-          (vl-catch-all-apply
-            '(lambda ()
-               (setq layer_name (vla-get-name layer_obj))
-               ;; 외부참조 레이어는 안전하게 처리
-               (setq safe_layer_name layer_name)
-               (setq g_original_vp_layer_states
-                 (cons (list safe_layer_name 
-                            (vla-get-layeron layer_obj)
-                            (vla-get-freeze layer_obj)
-                            (vla-get-lock layer_obj))
-                       g_original_vp_layer_states))
-            )
-          )
-        )
-        
-        ;; ★★★ 외부참조 가시성 처리 (강화된 XREF 지원) ★★★
-        (vl-catch-all-apply
-          '(lambda ()
-             ;; 1. XREF 블록 가시성 제어
-             (setq xrefs_collection (vla-get-blocks acad_doc))
-             (vlax-for xref_block_obj xrefs_collection
-               (if (= (vla-get-isxref xref_block_obj) :vlax-true)
-                 (vl-catch-all-apply
-                   '(lambda ()
-                      (setq g_original_xref_layer_states
-                        (cons (list (vla-get-name xref_block_obj) 
-                                   (vla-get-visible xref_block_obj))
-                              g_original_xref_layer_states))
-                      ;; XREF 블록을 보이게 설정
-                      (vla-put-visible xref_block_obj :vlax-true)
-                      (prompt (strcat "\n>> XREF 블록 활성화: " (vla-get-name xref_block_obj)))
-                   )
-                 )
-               )
-             )
-             
-             ;; 2. XREF 재로드 시도 (중요!)
-             (prompt "\n>> XREF 객체 새로고침을 위해 REGEN을 실행합니다...")
-             (vl-catch-all-apply '(lambda () (command-s "_.REGEN")))
-             
-             ;; 3. XCLIP 확인 및 해제 시도 (선택적)
-             (if has_xref_selection
-               (progn
-                 (prompt "\n>> XREF 클리핑 상태를 확인합니다...")
-                 (vl-catch-all-apply '(lambda () 
-                   ;; XCLIP 명령어를 단계별로 실행 (올바른 순서)
-                   (command "_.XCLIP") ; XCLIP 명령 시작
-                   (command "_ALL") ; 모든 객체 선택
-                   (command "") ; 선택 완료
-                   (command "_Delete") ; 클리핑 삭제 옵션
-                   (command "") ; 명령 완료
-                 ))
-               )
-               (prompt "\n>> XREF 객체가 없어 XCLIP 처리를 건너뛁니다...")
-             )
-          )
-        )
+          (setq g_original_vp_layer_states
+            (cons (cons (vla-get-name layer_obj) (vla-get-layeron layer_obj))
+                  g_original_vp_layer_states)))
 
         ;; 페이퍼스페이스 레이어 목록 생성
         (setq paperspace_layers '("0"))
@@ -364,56 +184,21 @@
                 (setq paperspace_layers (cons layer_name paperspace_layers)))
               (setq i (1+ i)))))
         
-        ;; ★★★ 레이어 끄기/켜기 처리 (외부참조 고려 + 동결 해제) - 오류 방지 ★★★
-        (prompt (strcat "\n>> 레이어 제어 시작 - 선택된 레이어 수: " (itoa (length target_layer_names))))
-        
+        ;; 레이어 끄기/켜기 처리 (외부참조 고려)
         (vlax-for layer_obj layers
-          (vl-catch-all-apply
-            '(lambda ()
-               (setq layer_name (vla-get-name layer_obj))
-               (cond
-                 ;; 선택된 객체들의 레이어는 켜기 (외부참조 포함)
-                 ((member layer_name target_layer_names)
-                  (vla-put-layeron layer_obj :vlax-true)
-                  ;; 외부참조가 아닌 일반 레이어만 freeze/lock 제어
-                  (if (not (vl-string-search "|" layer_name))
-                    (progn
-                      (vla-put-freeze layer_obj :vlax-false)
-                      (vla-put-lock layer_obj :vlax-false)
-                    )
-                  )
-                 )
-                 ;; 페이퍼스페이스 레이어는 그대로 유지
-                 ((member layer_name paperspace_layers)
-                  nil) ; 상태 유지
-                 ;; 나머지 레이어는 끄기 (외부참조 레이어가 아닌 경우만)
-                 ((not (vl-string-search "|" layer_name))
-                  (vla-put-layeron layer_obj :vlax-false))
-                 ;; 외부참조 레이어는 건너뜀
-                 (t nil)
-               )
-            )
-          )
-        )
+          (setq layer_name (vla-get-name layer_obj))
+          (cond
+            ;; 선택된 객체들의 레이어는 켜기 (외부참조 포함)
+            ((member layer_name target_layer_names)
+             (vla-put-layeron layer_obj :vlax-true))
+            ;; 페이퍼스페이스 레이어는 그대로 유지
+            ((member layer_name paperspace_layers)
+             nil) ; 상태 유지
+            ;; 나머지 레이어는 끄기
+            (t (vla-put-layeron layer_obj :vlax-false))))
         
         (setq g_layer_separation_active t)
         (prompt (strcat "\n>> 레이어 분리 완료: " layer_list_str "만 표시됩니다."))
-        (prompt "\n>> 외부참조 객체 가시성도 함께 제어되었습니다.")
-        
-        ;; ★★★ 최종 XREF 가시성 강제 새로고침 ★★★
-        (vl-catch-all-apply
-          '(lambda ()
-             (prompt "\n>> 최종 화면 새로고침을 수행합니다...")
-             (command-s "_.REGEN")
-             ;; XREF 레이어의 객체들을 강제로 다시 표시하기 위한 추가 처리
-             (foreach xref_layer target_layer_names
-               (if (vl-string-search "|" xref_layer)
-                 (prompt (strcat "\n>> XREF 레이어 활성화 완료: " xref_layer))
-               )
-             )
-          )
-        )
-        
         t ; 성공
       )
       (progn
@@ -423,59 +208,21 @@
     )
   )
 
-  ;; 레이어 상태 복원 함수 (XREF 지원)
-  (defun restore-layer-states (/ layer_obj layers xrefs_collection xref_block_obj)
+  ;; 레이어 상태 복원 함수
+  (defun restore-layer-states (/ layer_obj layers)
     (if (and g_original_vp_layer_states g_layer_separation_active)
       (progn
-        (prompt "\n>> 레이어 상태를 복원하는 중...")
         (setq layers (vla-get-layers acad_doc))
-        
-        ;; 기본 레이어 상태 복원 (On/Off, Freeze/Thaw, Lock/Unlock) - 오류 방지 강화
         (foreach state g_original_vp_layer_states
-          (vl-catch-all-apply
-            '(lambda ()
-               (setq layer_name (car state))
-               ;; 레이어가 존재하는지 확인
-               (if (not (vl-catch-all-error-p 
-                         (vl-catch-all-apply 'vla-item (list layers layer_name))))
-                 (progn
-                   (setq layer_obj (vla-item layers layer_name))
-                   ;; 각 속성을 개별적으로 안전하게 복원
-                   (vl-catch-all-apply '(lambda () (vla-put-layeron layer_obj (cadr state))))
-                   (vl-catch-all-apply '(lambda () (vla-put-freeze layer_obj (caddr state))))
-                   (vl-catch-all-apply '(lambda () (vla-put-lock layer_obj (cadddr state))))
-                 )
-                 (prompt (strcat "\n[경고] 레이어 '" layer_name "'을 찾을 수 없어 복원을 건너뛁니다."))
-               )
-             )
-          )
-        )
-        
-        ;; XREF 블록 가시성 상태 복원
-        (if g_original_xref_layer_states
-          (vl-catch-all-apply
-            '(lambda ()
-               (setq xrefs_collection (vla-get-blocks acad_doc))
-               (foreach xref_state g_original_xref_layer_states
-                 (if (not (vl-catch-all-error-p 
-                           (vl-catch-all-apply 'vla-item (list xrefs_collection (car xref_state)))))
-                   (vl-catch-all-apply
-                     '(lambda ()
-                       (setq xref_block_obj (vla-item xrefs_collection (car xref_state)))
-                       (vla-put-visible xref_block_obj (cadr xref_state))
-                     )
-                   )
-                 )
-               )
+          (if (not (vl-catch-all-error-p 
+                     (vl-catch-all-apply 'vla-item (list layers (car state)))))
+            (progn
+              (setq layer_obj (vla-item layers (car state)))
+              (vla-put-layeron layer_obj (cdr state))
             )
           )
         )
-        
-        ;; 화면 새로고침
-        (vl-catch-all-apply '(lambda () (command-s "_.REGEN")))
-        
         (setq g_original_vp_layer_states nil
-              g_original_xref_layer_states nil
               g_layer_separation_active nil)
         (prompt "\n>> 레이어 상태가 복원되었습니다.")
       )
@@ -614,7 +361,7 @@
            (prompt (strcat "\n[DEBUG] 높이 값: " (rtos g_viewport_height 2 4)))
            
            ;; ZOOM Center 명령 실행 (정확한 방식)
-           (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" view_center_3d g_viewport_height)))
+           (command "_.zoom" "_c" view_center_3d g_viewport_height)
            
            (prompt "\n>> 이전 화면으로 복원 완료 (ZOOM Center 방식)")
          )
@@ -661,7 +408,7 @@
            (prompt (strcat "\n[DEBUG] 높이 값: " (rtos g_paper_viewport_height 2 4)))
            
            ;; ZOOM Center 명령 실행
-           (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" view_center_3d g_paper_viewport_height)))
+           (command "_.zoom" "_c" view_center_3d g_paper_viewport_height)
            
            (prompt "\n>> 이전 배치 공간 화면으로 복원 완료 (ZOOM Center 방식)")
          )
@@ -708,7 +455,7 @@
            (prompt (strcat "\n[DEBUG] 뷰포트 높이 값: " (rtos g_paper_viewport_height 2 4)))
            
            ;; ZOOM Center 명령 실행 - 뷰포트 높이 사용
-           (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" view_center_3d g_paper_viewport_height)))
+           (command "_.zoom" "_c" view_center_3d g_paper_viewport_height)
            
            (prompt "\n>> 뷰포트용 배치 공간 화면으로 복원 완료 (ZOOM Center 방식)")
          )
@@ -730,7 +477,7 @@
                vp_top (+ (cadr vp_center_ps) (/ vp_height_ps 2.0)))
          
          ;; ZOOM Window 실행
-         (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_window" (list vp_left vp_bottom) (list vp_right vp_top))))
+         (command "_.zoom" "_window" (list vp_left vp_bottom) (list vp_right vp_top))
          
          ;; 뷰포트 너비 정보만 저장 (높이는 동적으로 저장되므로)
          (setq g_paper_viewport_width vp_width_ps)
@@ -859,7 +606,7 @@
          (if (>= (length points) 2)
            (setq current_temp_pline (create-temp-polyline points nil))
          )
-         (vl-catch-all-apply '(lambda () (command-s "_.REDRAW")))
+         (command "_.REDRAW")
         )
         
         ;; Enter 또는 취소
@@ -889,7 +636,7 @@
            (setq temp_ename (vlax-vla-object->ename temp_pline))
            
            ;; 화면 갱신
-           (vl-catch-all-apply '(lambda () (command-s "_.REDRAW")))
+           (command "_.REDRAW")
            
            ;; 길이/넓이 계산
            (if is_closed
@@ -997,7 +744,7 @@
       (progn
         (setq g_sr_selection_set nil) ; 선택집합 해제
         (sssetfirst nil nil) ; AutoCAD의 현재 선택집합 해제
-        (vl-catch-all-apply '(lambda () (command-s "_.REDRAW"))) ; 화면 갱신
+        (command "_.REDRAW") ; 화면 갱신
       )
     )
   )
@@ -1829,7 +1576,7 @@
                 (progn
                   (prompt "\n>> 이전 텍스트 위치로 화면을 복원합니다...")
                   (setq text_center_3d (list (car g_saved_text_center) (cadr g_saved_text_center) 0.0))
-                  (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" text_center_3d g_viewport_height)))
+                  (command "_.zoom" "_c" text_center_3d g_viewport_height)
                 )
               )
               ;; 배치공간
@@ -1837,7 +1584,7 @@
                 (progn
                   (prompt "\n>> 이전 텍스트 위치로 화면을 복원합니다...")
                   (setq text_center_3d (list (car g_saved_paper_text_center) (cadr g_saved_paper_text_center) 0.0))
-                  (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" text_center_3d g_paper_viewport_height)))
+                  (command "_.zoom" "_c" text_center_3d g_paper_viewport_height)
                 )
               )
             )
@@ -1875,10 +1622,6 @@
             ;; 취소
             (t 
              (prompt "\n*텍스트 선택이 취소되었습니다.*")
-             ;; ★★★ 레이어 상태 복원 (텍스트 선택 취소 시) ★★★
-             (if g_layer_separation_active
-               (restore-layer-states)
-             )
              (setq measurement_complete t))  ; 종료
           )
         )
@@ -1886,10 +1629,6 @@
       (progn
         ;; 객체 선택이 취소된 경우
         (prompt "\n*객체 선택이 취소되었습니다.*")
-        ;; ★★★ 레이어 상태 복원 (객체 선택 취소 시) ★★★
-        (if g_layer_separation_active
-          (restore-layer-states)
-        )
       )
     )
     
@@ -1900,33 +1639,12 @@
     (delete-all-temp-objects)
   )
 
-  ;; --- ★★★ 수정된 모형공간 반복 측정 함수 (레이어 분리 기능 + 화면 위치 기억) ★★★
-  (defun perform-modelspace-measurements (/ continue_work user_choice first_run layer_separation_choice)
+  ;; --- 수정된 모형공간 반복 측정 함수 (화면 위치 기억 기능 추가) ---
+  (defun perform-modelspace-measurements (/ continue_work user_choice first_run)
     (setq continue_work t first_run t)
     
     (while continue_work
       (prompt "\n----------------------------------------")
-      
-      ;; ★★★ 레이어 분리 기능 추가 (모형 공간용) ★★★
-      (if first_run
-        (progn
-          (initget "Yes No")
-          (setq layer_separation_choice (getkword "\n레이어 분리를 하시겠습니까? [예(Y)/아니오(N)] <아니오>: "))
-          (if (not layer_separation_choice) (setq layer_separation_choice "No"))
-          
-          (if (= layer_separation_choice "Yes")
-            (progn
-              (prompt "\n=== 모형 공간 레이어 분리 시작 (외부참조 지원) ===")
-              (if (perform-layer-separation)
-                (prompt "\n>> 레이어 분리가 완료되었습니다. 객체를 선택하세요.")
-                (prompt "\n>> 레이어 분리를 건너뜁니다.")
-              )
-            )
-            (prompt "\n>> 레이어 분리를 건너뜁니다.")
-          )
-        )
-      )
-      
       (process-multi-selection-with-back "model" first_run)
       
       (setq first_run nil) ; 첫 실행 이후로 설정
@@ -1934,53 +1652,16 @@
       (initget "Yes No")
       (setq user_choice (getkword "\n다른 객체를 측정하시겠습니까? [예(Y)/아니오(N)] <예>: "))
       (if (not user_choice) (setq user_choice "Yes"))
-      
-      ;; ★★★ 연속 측정 종료 시에만 레이어 상태 복원 ★★★
-      (if (= user_choice "No") 
-        (progn
-          (setq continue_work nil)
-          (if g_layer_separation_active
-            (progn
-              (prompt "\n>> 모형 공간 측정 작업 완료. 레이어 상태를 복원합니다...")
-              (restore-layer-states)
-            )
-          )
-        )
-        ;; 연속 측정 시에는 레이어 분리 상태 유지
-        (if g_layer_separation_active
-          (prompt "\n>> 레이어 분리 상태를 유지합니다. 다음 객체를 선택하세요.")
-        )
-      )
+      (if (= user_choice "No") (setq continue_work nil))
     )
   )
 
-  ;; --- ★★★ 수정된 배치공간 반복 측정 함수 (레이어 분리 기능 + 화면 위치 기억) ★★★
-  (defun perform-paperspace-measurements (/ continue_work user_choice first_run layer_separation_choice)
+  ;; --- 수정된 배치공간 반복 측정 함수 (화면 위치 기억 기능 추가) ---
+  (defun perform-paperspace-measurements (/ continue_work user_choice first_run)
     (setq continue_work t first_run t)
     
     (while continue_work
       (prompt "\n----------------------------------------")
-      
-      ;; ★★★ 레이어 분리 기능 추가 (배치 공간용) ★★★
-      (if first_run
-        (progn
-          (initget "Yes No")
-          (setq layer_separation_choice (getkword "\n레이어 분리를 하시겠습니까? [예(Y)/아니오(N)] <아니오>: "))
-          (if (not layer_separation_choice) (setq layer_separation_choice "No"))
-          
-          (if (= layer_separation_choice "Yes")
-            (progn
-              (prompt "\n=== 배치 공간 레이어 분리 시작 (외부참조 지원) ===")
-              (if (perform-layer-separation)
-                (prompt "\n>> 레이어 분리가 완료되었습니다. 객체를 선택하세요.")
-                (prompt "\n>> 레이어 분리를 건너뜁니다.")
-              )
-            )
-            (prompt "\n>> 레이어 분리를 건너뜁니다.")
-          )
-        )
-      )
-      
       (process-multi-selection-with-back "paper" first_run)
       
       (setq first_run nil) ; 첫 실행 이후로 설정
@@ -1988,27 +1669,11 @@
       (initget "Yes No")
       (setq user_choice (getkword "\n다른 객체를 측정하시겠습니까? [예(Y)/아니오(N)] <예>: "))
       (if (not user_choice) (setq user_choice "Yes"))
-      
-      ;; ★★★ 연속 측정 종료 시에만 레이어 상태 복원 ★★★
-      (if (= user_choice "No") 
-        (progn
-          (setq continue_work nil)
-          (if g_layer_separation_active
-            (progn
-              (prompt "\n>> 배치 공간 측정 작업 완료. 레이어 상태를 복원합니다...")
-              (restore-layer-states)
-            )
-          )
-        )
-        ;; 연속 측정 시에는 레이어 분리 상태 유지
-        (if g_layer_separation_active
-          (prompt "\n>> 레이어 분리 상태를 유지합니다. 다음 객체를 선택하세요.")
-        )
-      )
+      (if (= user_choice "No") (setq continue_work nil))
     )
   )
 
-  ;; --- ★★★ 수정된 뷰포트 측정 함수 (레이어 분리 기능 + 외부참조 지원 추가) ---
+  ;; --- ★★★ 수정된 뷰포트 측정 함수 (레이어 분리 기능 추가) ---
 (defun perform-viewport-measurements (vp_obj / continue_work user_choice original_mspace_state selection_result
                                               measurement_data_list total_value final_data_list
                                               prompt_string final_text_string sel_obj_txt text_selection_prompt
@@ -2042,7 +1707,7 @@
       (progn
         (prompt "\n>> 뷰포트가 활성화되었습니다.")
         
-        ;; ★★★ 레이어 분리 기능 추가 (외부참조 지원) ★★★
+        ;; ★★★ 레이어 분리 기능 추가 ★★★
         (if first_run
           (progn
             (initget "Yes No")
@@ -2051,7 +1716,7 @@
             
             (if (= layer_separation_choice "Yes")
               (progn
-                (prompt "\n=== 레이어 분리 시작 (외부참조 지원) ===")
+                (prompt "\n=== 레이어 분리 시작 ===")
                 (if (perform-layer-separation)
                   (prompt "\n>> 레이어 분리가 완료되었습니다. 객체를 선택하세요.")
                   (prompt "\n>> 레이어 분리를 건너뜁니다.")
@@ -2111,7 +1776,7 @@
                 (progn
                   (prompt "\n>> 이전 텍스트 위치로 화면을 복원합니다...")
                   (setq text_center_3d (list (car g_saved_paper_text_center) (cadr g_saved_paper_text_center) 0.0))
-                  (vl-catch-all-apply '(lambda () (command-s "_.zoom" "_c" text_center_3d g_paper_viewport_height)))
+                  (command "_.zoom" "_c" text_center_3d g_paper_viewport_height)
                 )
               )
               
@@ -2153,20 +1818,12 @@
                 
                 (t 
                  (prompt "\n*텍스트 선택이 취소되었습니다.*")
-                 ;; ★★★ 레이어 상태 복원 (텍스트 선택 취소 시) ★★★
-                 (if g_layer_separation_active
-                   (restore-layer-states)
-                 )
                  (setq measurement_complete t))
               )
             )
           )
           (progn
             (prompt "\n*객체 선택이 취소되었습니다.*")
-            ;; ★★★ 레이어 상태 복원 (객체 선택 취소 시) ★★★
-            (if g_layer_separation_active
-              (restore-layer-states)
-            )
           )
         )
         
@@ -2175,28 +1832,17 @@
         ;; --- 임시 측정 객체들 삭제 ---
         (delete-all-temp-objects)
         
+        ;; ★★★ 레이어 상태 복원 (작업 완료 후) ★★★
+        (if g_layer_separation_active
+          (restore-layer-states)
+        )
+        
         (setq first_run nil)
 
         (initget "Yes No")
         (setq user_choice (getkword "\n같은 뷰포트에서 다른 객체를 측정하시겠습니까? [예(Y)/아니오(N)] <예>: "))
         (if (not user_choice) (setq user_choice "Yes"))
-        
-        ;; ★★★ 연속 측정 종료 시에만 레이어 상태 복원 ★★★
-        (if (= user_choice "No") 
-          (progn
-            (setq continue_work nil)
-            (if g_layer_separation_active
-              (progn
-                (prompt "\n>> 측정 작업 완료. 레이어 상태를 복원합니다...")
-                (restore-layer-states)
-              )
-            )
-          )
-          ;; 연속 측정 시에는 레이어 분리 상태 유지
-          (if g_layer_separation_active
-            (prompt "\n>> 레이어 분리 상태를 유지합니다. 다음 객체를 선택하세요.")
-          )
-        )
+        (if (= user_choice "No") (setq continue_work nil))
       )
     )
   )
@@ -2207,7 +1853,7 @@
 
   (if (= (getvar "TILEMODE") 1)
     (progn
-      (prompt "\n[모형 공간 측정 모드 - 레이어 분리 지원]")
+      (prompt "\n[모형 공간 측정 모드]")
       (perform-modelspace-measurements)
       (prompt "\n>> 모형 공간 측정 작업이 완료되었습니다.")
     )
@@ -2218,7 +1864,7 @@
       
       (if (= mode "Viewport")
         (progn
-          (prompt "\n[뷰포트 내부 측정 모드 - 레이어 분리 지원]")
+          (prompt "\n[뷰포트 내부 측정 모드]")
           (prompt "\n** 안내: 뷰포트나 폴리선 경계만 선택하세요. **")
           ;; 뷰포트 선택
           (setq target_vp_obj nil)
@@ -2255,7 +1901,7 @@
       
       (if (= mode "Paperspace")
         (progn
-          (prompt "\n[배치 공간 직접 측정 모드 - 레이어 분리 지원]")
+          (prompt "\n[배치 공간 직접 측정 모드]")
           (perform-paperspace-measurements)
           (prompt "\n>> 배치 공간 측정 작업이 완료되었습니다.")
         )
@@ -2276,5 +1922,5 @@
 )
 
 ;; 프로그램 로드 완료 메시지
-(prompt "\n'SR' 명령이 로드되었습니다. (모든 측정 모드에서 레이어 분리 + 외부참조 완전 지원)")
+(prompt "\n'SR' 명령이 로드되었습니다. (레이어 분리 기능 포함)")
 (princ)
