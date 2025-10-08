@@ -206,19 +206,29 @@
         ;; ★★★ 선택적 외부참조 레이어 확장 처리 (개선) ★★★
         ;; 선택된 객체 중에 외부참조 레이어가 있는지 확인
         (setq has_xref_selection nil)
+        (prompt "\n[DEBUG] XREF 선택 여부 확인 중...")
         (foreach layer_name target_layer_names
+          (prompt (strcat "\n[DEBUG] 레이어 체크: '" layer_name "'"))
           (if (is-xref-layer layer_name)
-            (setq has_xref_selection t)
+            (progn
+              (setq has_xref_selection t)
+              (prompt (strcat "\n[DEBUG] ★ XREF 레이어 발견: '" layer_name "'"))
+            )
+            (prompt (strcat "\n[DEBUG] - 일반 레이어: '" layer_name "'"))
           )
         )
         
         ;; 외부참조 블록이 선택되었는지도 확인
+        (prompt (strcat "\n[DEBUG] XREF 블록 검사: " (vl-princ-to-string selected_xref_blocks)))
         (if selected_xref_blocks
           (progn
             (setq has_xref_selection t)
             (prompt (strcat "\n>> ✓ 외부참조 블록이 선택되어 XREF 레이어 확장을 활성화합니다: " (vl-princ-to-string selected_xref_blocks)))
           )
+          (prompt "\n[DEBUG] - XREF 블록이 선택되지 않음")
         )
+        
+        (prompt (strcat "\n[DEBUG] 최종 has_xref_selection: " (vl-princ-to-string has_xref_selection)))
         
         ;; 외부참조 객체를 선택한 경우에만 관련 XREF 레이어 확장
         (if has_xref_selection
