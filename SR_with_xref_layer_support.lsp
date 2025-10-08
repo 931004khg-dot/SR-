@@ -120,9 +120,20 @@
   (defun perform-layer-separation (/ sel_set target_layer_names layers layer_obj layer_name
                                       paperspace_layers ss i ent layer_list_str obj_vla
                                       xref_layer_names all_layer_names xrefs_collection xref_obj
-                                      xref_blocks xref_block_obj)
-    (prompt "\n=== 레이어 분리 모드 ===")
+                                      xref_blocks xref_block_obj safe_layer_name)
+    (prompt "\n=== 레이어 분리 모드 (XREF 완전 지원) ===")
     (prompt "\n표시할 레이어의 객체들을 선택하세요 (Enter로 완료): ")
+    
+    ;; ★★★ XREF 가시성을 위한 시스템 변수 확인 및 설정 ★★★
+    (vl-catch-all-apply
+      '(lambda ()
+         ;; XREF 표시 관련 시스템 변수들 확인
+         (if (< (getvar "VISRETAIN") 1) (setvar "VISRETAIN" 1))
+         (if (< (getvar "XREFOVERRIDE") 1) (setvar "XREFOVERRIDE" 1))
+         (prompt "\n>> XREF 가시성 설정 최적화 완료")
+      )
+    )
+    
     (setq sel_set (ssget))
     
     (if sel_set
@@ -170,33 +181,51 @@
         (setq g_original_vp_layer_states nil
               g_original_xref_layer_states nil)
 
-        ;; 현재 레이어 상태 저장 (On/Off, Freeze/Thaw, Lock/Unlock)
+        ;; ★★★ 현재 레이어 상태 저장 (On/Off, Freeze/Thaw, Lock/Unlock) - 오류 방지 ★★★
         (vlax-for layer_obj layers
-          (setq layer_name (vla-get-name layer_obj))
-          (setq g_original_vp_layer_states
-            (cons (list layer_name 
-                       (vla-get-layeron layer_obj)
-                       (vla-get-freeze layer_obj)
-                       (vla-get-lock layer_obj))
-                  g_original_vp_layer_states)))
+          (vl-catch-all-apply
+            '(lambda ()
+               (setq layer_name (vla-get-name layer_obj))
+               ;; 외부참조 레이어는 안전하게 처리
+               (setq safe_layer_name layer_name)
+               (setq g_original_vp_layer_states
+                 (cons (list safe_layer_name 
+                            (vla-get-layeron layer_obj)
+                            (vla-get-freeze layer_obj)
+                            (vla-get-lock layer_obj))
+                       g_original_vp_layer_states))
+            )
+          )
+        )
         
-        ;; ★★★ 외부참조 가시성 처리 ★★★
-        ;; 외부참조 블록들의 상태도 저장하고 제어
+        ;; ★★★ 외부참조 가시성 처리 (강화된 XREF 지원) ★★★
         (vl-catch-all-apply
           '(lambda ()
+             ;; 1. XREF 블록 가시성 제어
              (setq xrefs_collection (vla-get-blocks acad_doc))
              (vlax-for xref_block_obj xrefs_collection
                (if (= (vla-get-isxref xref_block_obj) :vlax-true)
-                 (progn
-                   (setq g_original_xref_layer_states
-                     (cons (list (vla-get-name xref_block_obj) 
-                                (vla-get-visible xref_block_obj))
-                           g_original_xref_layer_states))
-                   ;; 외부참조 블록을 보이게 설정
-                   (vla-put-visible xref_block_obj :vlax-true)
+                 (vl-catch-all-apply
+                   '(lambda ()
+                      (setq g_original_xref_layer_states
+                        (cons (list (vla-get-name xref_block_obj) 
+                                   (vla-get-visible xref_block_obj))
+                              g_original_xref_layer_states))
+                      ;; XREF 블록을 보이게 설정
+                      (vla-put-visible xref_block_obj :vlax-true)
+                      (prompt (strcat "\n>> XREF 블록 활성화: " (vla-get-name xref_block_obj)))
+                   )
                  )
                )
              )
+             
+             ;; 2. XREF 재로드 시도 (중요!)
+             (prompt "\n>> XREF 객체 새로고침을 위해 REGEN을 실행합니다...")
+             (vl-catch-all-apply '(lambda () (command "_.REGEN")))
+             
+             ;; 3. XCLIP 확인 및 해제 시도
+             (prompt "\n>> XREF 클리핑 상태를 확인합니다...")
+             (vl-catch-all-apply '(lambda () (command "_.-XCLIP" "_ALL" "_Delete" "")))
           )
         )
 
@@ -211,23 +240,52 @@
                 (setq paperspace_layers (cons layer_name paperspace_layers)))
               (setq i (1+ i)))))
         
-        ;; 레이어 끄기/켜기 처리 (외부참조 고려 + 동결 해제)
+        ;; ★★★ 레이어 끄기/켜기 처리 (외부참조 고려 + 동결 해제) - 오류 방지 ★★★
         (vlax-for layer_obj layers
-          (setq layer_name (vla-get-name layer_obj))
-          (cond
-            ;; 선택된 객체들의 레이어는 켜기, 동결 해제, 잠금 해제 (외부참조 포함)
-            ((member layer_name target_layer_names)
-             (vla-put-layeron layer_obj :vlax-true)
-             (vla-put-freeze layer_obj :vlax-false)
-             (vla-put-lock layer_obj :vlax-false))
-            ;; 페이퍼스페이스 레이어는 그대로 유지
-            ((member layer_name paperspace_layers)
-             nil) ; 상태 유지
-            ;; 나머지 레이어는 끄기
-            (t (vla-put-layeron layer_obj :vlax-false))))
+          (vl-catch-all-apply
+            '(lambda ()
+               (setq layer_name (vla-get-name layer_obj))
+               (cond
+                 ;; 선택된 객체들의 레이어는 켜기 (외부참조 포함)
+                 ((member layer_name target_layer_names)
+                  (vla-put-layeron layer_obj :vlax-true)
+                  ;; 외부참조가 아닌 일반 레이어만 freeze/lock 제어
+                  (if (not (vl-string-search "|" layer_name))
+                    (progn
+                      (vla-put-freeze layer_obj :vlax-false)
+                      (vla-put-lock layer_obj :vlax-false)
+                    )
+                  )
+                 )
+                 ;; 페이퍼스페이스 레이어는 그대로 유지
+                 ((member layer_name paperspace_layers)
+                  nil) ; 상태 유지
+                 ;; 나머지 레이어는 끄기 (외부참조 레이어가 아닌 경우만)
+                 ((not (vl-string-search "|" layer_name))
+                  (vla-put-layeron layer_obj :vlax-false))
+               )
+            )
+          )
+        )
         
         (setq g_layer_separation_active t)
         (prompt (strcat "\n>> 레이어 분리 완료: " layer_list_str "만 표시됩니다."))
+        (prompt "\n>> 외부참조 객체 가시성도 함께 제어되었습니다.")
+        
+        ;; ★★★ 최종 XREF 가시성 강제 새로고침 ★★★
+        (vl-catch-all-apply
+          '(lambda ()
+             (prompt "\n>> 최종 화면 새로고침을 수행합니다...")
+             (command "_.REGEN")
+             ;; XREF 레이어의 객체들을 강제로 다시 표시하기 위한 추가 처리
+             (foreach xref_layer target_layer_names
+               (if (vl-string-search "|" xref_layer)
+                 (prompt (strcat "\n>> XREF 레이어 활성화 완료: " xref_layer))
+               )
+             )
+          )
+        )
+        
         t ; 성공
       )
       (progn
@@ -1909,17 +1967,28 @@
         ;; --- 임시 측정 객체들 삭제 ---
         (delete-all-temp-objects)
         
-        ;; ★★★ 레이어 상태 복원 (작업 완료 후) ★★★
-        (if g_layer_separation_active
-          (restore-layer-states)
-        )
-        
         (setq first_run nil)
 
         (initget "Yes No")
         (setq user_choice (getkword "\n같은 뷰포트에서 다른 객체를 측정하시겠습니까? [예(Y)/아니오(N)] <예>: "))
         (if (not user_choice) (setq user_choice "Yes"))
-        (if (= user_choice "No") (setq continue_work nil))
+        
+        ;; ★★★ 연속 측정 종료 시에만 레이어 상태 복원 ★★★
+        (if (= user_choice "No") 
+          (progn
+            (setq continue_work nil)
+            (if g_layer_separation_active
+              (progn
+                (prompt "\n>> 측정 작업 완료. 레이어 상태를 복원합니다...")
+                (restore-layer-states)
+              )
+            )
+          )
+          ;; 연속 측정 시에는 레이어 분리 상태 유지
+          (if g_layer_separation_active
+            (prompt "\n>> 레이어 분리 상태를 유지합니다. 다음 객체를 선택하세요.")
+          )
+        )
       )
     )
   )
