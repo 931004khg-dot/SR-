@@ -1766,12 +1766,33 @@
     (delete-all-temp-objects)
   )
 
-  ;; --- 수정된 모형공간 반복 측정 함수 (화면 위치 기억 기능 추가) ---
-  (defun perform-modelspace-measurements (/ continue_work user_choice first_run)
+  ;; --- ★★★ 수정된 모형공간 반복 측정 함수 (레이어 분리 기능 + 화면 위치 기억) ★★★
+  (defun perform-modelspace-measurements (/ continue_work user_choice first_run layer_separation_choice)
     (setq continue_work t first_run t)
     
     (while continue_work
       (prompt "\n----------------------------------------")
+      
+      ;; ★★★ 레이어 분리 기능 추가 (모형 공간용) ★★★
+      (if first_run
+        (progn
+          (initget "Yes No")
+          (setq layer_separation_choice (getkword "\n레이어 분리를 하시겠습니까? [예(Y)/아니오(N)] <아니오>: "))
+          (if (not layer_separation_choice) (setq layer_separation_choice "No"))
+          
+          (if (= layer_separation_choice "Yes")
+            (progn
+              (prompt "\n=== 모형 공간 레이어 분리 시작 (외부참조 지원) ===")
+              (if (perform-layer-separation)
+                (prompt "\n>> 레이어 분리가 완료되었습니다. 객체를 선택하세요.")
+                (prompt "\n>> 레이어 분리를 건너뜁니다.")
+              )
+            )
+            (prompt "\n>> 레이어 분리를 건너뜁니다.")
+          )
+        )
+      )
+      
       (process-multi-selection-with-back "model" first_run)
       
       (setq first_run nil) ; 첫 실행 이후로 설정
@@ -1779,16 +1800,53 @@
       (initget "Yes No")
       (setq user_choice (getkword "\n다른 객체를 측정하시겠습니까? [예(Y)/아니오(N)] <예>: "))
       (if (not user_choice) (setq user_choice "Yes"))
-      (if (= user_choice "No") (setq continue_work nil))
+      
+      ;; ★★★ 연속 측정 종료 시에만 레이어 상태 복원 ★★★
+      (if (= user_choice "No") 
+        (progn
+          (setq continue_work nil)
+          (if g_layer_separation_active
+            (progn
+              (prompt "\n>> 모형 공간 측정 작업 완료. 레이어 상태를 복원합니다...")
+              (restore-layer-states)
+            )
+          )
+        )
+        ;; 연속 측정 시에는 레이어 분리 상태 유지
+        (if g_layer_separation_active
+          (prompt "\n>> 레이어 분리 상태를 유지합니다. 다음 객체를 선택하세요.")
+        )
+      )
     )
   )
 
-  ;; --- 수정된 배치공간 반복 측정 함수 (화면 위치 기억 기능 추가) ---
-  (defun perform-paperspace-measurements (/ continue_work user_choice first_run)
+  ;; --- ★★★ 수정된 배치공간 반복 측정 함수 (레이어 분리 기능 + 화면 위치 기억) ★★★
+  (defun perform-paperspace-measurements (/ continue_work user_choice first_run layer_separation_choice)
     (setq continue_work t first_run t)
     
     (while continue_work
       (prompt "\n----------------------------------------")
+      
+      ;; ★★★ 레이어 분리 기능 추가 (배치 공간용) ★★★
+      (if first_run
+        (progn
+          (initget "Yes No")
+          (setq layer_separation_choice (getkword "\n레이어 분리를 하시겠습니까? [예(Y)/아니오(N)] <아니오>: "))
+          (if (not layer_separation_choice) (setq layer_separation_choice "No"))
+          
+          (if (= layer_separation_choice "Yes")
+            (progn
+              (prompt "\n=== 배치 공간 레이어 분리 시작 (외부참조 지원) ===")
+              (if (perform-layer-separation)
+                (prompt "\n>> 레이어 분리가 완료되었습니다. 객체를 선택하세요.")
+                (prompt "\n>> 레이어 분리를 건너뜁니다.")
+              )
+            )
+            (prompt "\n>> 레이어 분리를 건너뜁니다.")
+          )
+        )
+      )
+      
       (process-multi-selection-with-back "paper" first_run)
       
       (setq first_run nil) ; 첫 실행 이후로 설정
@@ -1796,7 +1854,23 @@
       (initget "Yes No")
       (setq user_choice (getkword "\n다른 객체를 측정하시겠습니까? [예(Y)/아니오(N)] <예>: "))
       (if (not user_choice) (setq user_choice "Yes"))
-      (if (= user_choice "No") (setq continue_work nil))
+      
+      ;; ★★★ 연속 측정 종료 시에만 레이어 상태 복원 ★★★
+      (if (= user_choice "No") 
+        (progn
+          (setq continue_work nil)
+          (if g_layer_separation_active
+            (progn
+              (prompt "\n>> 배치 공간 측정 작업 완료. 레이어 상태를 복원합니다...")
+              (restore-layer-states)
+            )
+          )
+        )
+        ;; 연속 측정 시에는 레이어 분리 상태 유지
+        (if g_layer_separation_active
+          (prompt "\n>> 레이어 분리 상태를 유지합니다. 다음 객체를 선택하세요.")
+        )
+      )
     )
   )
 
@@ -1999,7 +2073,7 @@
 
   (if (= (getvar "TILEMODE") 1)
     (progn
-      (prompt "\n[모형 공간 측정 모드]")
+      (prompt "\n[모형 공간 측정 모드 - 레이어 분리 지원]")
       (perform-modelspace-measurements)
       (prompt "\n>> 모형 공간 측정 작업이 완료되었습니다.")
     )
@@ -2010,7 +2084,7 @@
       
       (if (= mode "Viewport")
         (progn
-          (prompt "\n[뷰포트 내부 측정 모드]")
+          (prompt "\n[뷰포트 내부 측정 모드 - 레이어 분리 지원]")
           (prompt "\n** 안내: 뷰포트나 폴리선 경계만 선택하세요. **")
           ;; 뷰포트 선택
           (setq target_vp_obj nil)
@@ -2047,7 +2121,7 @@
       
       (if (= mode "Paperspace")
         (progn
-          (prompt "\n[배치 공간 직접 측정 모드]")
+          (prompt "\n[배치 공간 직접 측정 모드 - 레이어 분리 지원]")
           (perform-paperspace-measurements)
           (prompt "\n>> 배치 공간 측정 작업이 완료되었습니다.")
         )
@@ -2068,5 +2142,5 @@
 )
 
 ;; 프로그램 로드 완료 메시지
-(prompt "\n'SR' 명령이 로드되었습니다. (레이어 분리 + 외부참조 지원)")
+(prompt "\n'SR' 명령이 로드되었습니다. (모든 측정 모드에서 레이어 분리 + 외부참조 완전 지원)")
 (princ)
